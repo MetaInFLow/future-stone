@@ -13,6 +13,7 @@ from app.modules.simulation.use_cases import (
     get_skill_runs,
     get_status,
     get_story_map,
+    list_simulations,
     start_simulation,
 )
 
@@ -24,6 +25,11 @@ def create_app() -> Flask:
     @app.get("/api/health")
     def health():
         return jsonify({"success": True, "data": {"status": "ok", "service": "future-stone"}})
+
+    @app.get("/api/simulations")
+    def list_simulations_route():
+        limit = request.args.get("limit", default=20, type=int)
+        return jsonify({"success": True, "data": list_simulations(limit=limit)})
 
     @app.post("/api/simulations")
     def create_simulation_route():

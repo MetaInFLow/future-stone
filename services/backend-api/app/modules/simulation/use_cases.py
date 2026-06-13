@@ -8,6 +8,7 @@ from .repository import (
     load_request,
     read_json,
     read_jsonl,
+    runtime_root,
     save_request,
     simulation_dir,
     write_json,
@@ -27,6 +28,38 @@ def create_simulation(request: SimulationRequest) -> dict:
         "status": "created",
         "artifact_dir": str(simulation_dir(simulation_id)),
     }
+
+
+def list_simulations(limit: int = 20) -> dict:
+    root = runtime_root()
+    if not root.exists():
+        return {"simulations": []}
+
+    folders = [path for path in root.iterdir() if path.is_dir() and path.name.startswith("sim-")]
+    folders.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    simulations = []
+    for folder in folders[:limit]:
+        progress_path = folder / "progress.json"
+        request_path = folder / "simulation_request.json"
+        report_path = folder / "report.json"
+        progress = read_json(progress_path) if progress_path.exists() else Progress().model_dump()
+        request_payload = read_json(request_path) if request_path.exists() else {}
+        report = read_json(report_path) if report_path.exists() else {}
+        simulations.append(
+            {
+                "simulation_id": folder.name,
+                "status": progress.get("status", "created"),
+                "completed_steps": progress.get("completed_steps", 0),
+                "total_steps": progress.get("total_steps", 0),
+                "current_step": progress.get("current_step", ""),
+                "updated_at": progress.get("updated_at", ""),
+                "question": request_payload.get("question", ""),
+                "runner": request_payload.get("runner", ""),
+                "recommended_path": report.get("recommended_path", ""),
+                "timeline_count": report.get("timeline_count", 0),
+            }
+        )
+    return {"simulations": simulations}
 
 
 def start_simulation(simulation_id: str) -> dict:

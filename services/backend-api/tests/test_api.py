@@ -82,3 +82,31 @@ def test_llm_start_returns_running_without_waiting_for_full_loop(tmp_path, monke
     assert response["story_map"] is None
     assert started.wait(timeout=1)
     release.set()
+
+
+def test_list_simulations_returns_latest_report_summary(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUTURE_STONE_RUNTIME_DIR", str(tmp_path))
+    app = create_app()
+    client = app.test_client()
+
+    create_response = client.post(
+        "/api/simulations",
+        json={
+            "scene": {"description": "要不要参加黑客松？"},
+            "question": "是否参加黑客松？",
+            "world_count": 1,
+            "rounds": 1,
+            "runner": "replay",
+        },
+    )
+    simulation_id = create_response.get_json()["data"]["simulation_id"]
+    client.post(f"/api/simulations/{simulation_id}/start")
+
+    list_response = client.get("/api/simulations")
+
+    assert list_response.status_code == 200
+    simulations = list_response.get_json()["data"]["simulations"]
+    assert simulations[0]["simulation_id"] == simulation_id
+    assert simulations[0]["status"] == "completed"
+    assert simulations[0]["recommended_path"] in {"参加", "不参加", "条件参加"}
+    assert simulations[0]["timeline_count"] == 1

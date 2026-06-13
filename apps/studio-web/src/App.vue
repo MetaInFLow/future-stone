@@ -50,6 +50,20 @@
         <p v-if="errorMessage" class="error-message">{{ errorMessage }}</p>
       </section>
 
+      <section v-if="recentSimulations.length" class="recent-section">
+        <h2>最近结果</h2>
+        <button
+          v-for="item in recentSimulations.slice(0, 5)"
+          :key="item.simulation_id"
+          class="recent-run"
+          :class="{ active: item.simulation_id === activeSimulationId }"
+          @click="restoreSimulation(item.simulation_id)"
+        >
+          <span>{{ item.recommended_path || item.status }}</span>
+          <small>{{ item.completed_steps }} / {{ item.total_steps }} · {{ item.question }}</small>
+        </button>
+      </section>
+
       <section class="steps-section">
         <h2>链路</h2>
         <ol>
@@ -188,9 +202,10 @@
 <script setup>
 import axios from 'axios'
 import * as d3 from 'd3'
-import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 
 const apiBase = import.meta.env.VITE_API_BASE || 'http://localhost:5055'
+const activeSimulationStorageKey = 'future-stone.active-simulation-id'
 
 const form = reactive({
   scene: {
@@ -218,6 +233,7 @@ const errorMessage = ref('')
 const activeSimulationId = ref('')
 const runStartedAt = ref(null)
 const lastStatusAt = ref(null)
+const recentSimulations = ref([])
 
 const stepIndex = computed(() => {
   if (busy.value && progress.value.completed_steps > 0) return 3
@@ -282,12 +298,15 @@ async function createAndRun() {
     const created = await axios.post(`${apiBase}/api/simulations`, payload)
     const simulationId = created.data.data.simulation_id
     activeSimulationId.value = simulationId
+    persistActiveSimulation(simulationId)
     const started = await axios.post(`${apiBase}/api/simulations/${simulationId}/start`)
     applySimulationPayload(started.data.data)
+    await loadRecentSimulations()
     if (progress.value.status !== 'completed') {
       await pollUntilCompleted(simulationId)
     }
     await loadSimulationArtifacts(simulationId)
+    await loadRecentSimulations()
   } catch (error) {
     errorMessage.value = error?.response?.data?.error || error?.message || '推演失败'
   } finally {
@@ -299,6 +318,41 @@ function applySimulationPayload(data) {
   progress.value = data.progress || {}
   if (data.story_map) storyMap.value = data.story_map
   if (data.report) report.value = data.report
+}
+
+async function loadRecentSimulations() {
+  const response = await axios.get(`${apiBase}/api/simulations?limit=8`)
+  recentSimulations.value = response.data.data.simulations || []
+}
+
+async function restoreSimulation(simulationId) {
+  if (!simulationId) return
+  busy.value = true
+  errorMessage.value = ''
+  activeSimulationId.value = simulationId
+  persistActiveSimulation(simulationId)
+  runStartedAt.value = Date.now()
+  lastStatusAt.value = Date.now()
+  try {
+    const statusRes = await axios.get(`${apiBase}/api/simulations/${simulationId}/status`)
+    progress.value = statusRes.data.data
+    await loadPartialArtifacts(simulationId)
+    if (progress.value.status === 'completed') {
+      await loadSimulationArtifacts(simulationId)
+      return
+    }
+    if (progress.value.status === 'running') {
+      await pollUntilCompleted(simulationId)
+      await loadSimulationArtifacts(simulationId)
+      return
+    }
+    errorMessage.value = progress.value.current_step || `无法恢复 ${simulationId}`
+  } catch (error) {
+    errorMessage.value = error?.response?.data?.error || error?.message || '恢复结果失败'
+  } finally {
+    busy.value = false
+    await loadRecentSimulations()
+  }
 }
 
 async function pollUntilCompleted(simulationId) {
@@ -363,6 +417,25 @@ function formatClock(value) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleTimeString()
+}
+
+function persistActiveSimulation(simulationId) {
+  window.localStorage.setItem(activeSimulationStorageKey, simulationId)
+}
+
+async function restoreInitialSimulation() {
+  try {
+    await loadRecentSimulations()
+    const storedSimulationId = window.localStorage.getItem(activeSimulationStorageKey)
+    const storedExists = recentSimulations.value.some(
+      (item) => item.simulation_id === storedSimulationId,
+    )
+    const fallbackSimulationId = recentSimulations.value[0]?.simulation_id || ''
+    const simulationId = storedExists ? storedSimulationId : fallbackSimulationId
+    if (simulationId) await restoreSimulation(simulationId)
+  } catch (error) {
+    errorMessage.value = error?.message || '加载最近结果失败'
+  }
 }
 
 function splitList(value) {
@@ -469,4 +542,5 @@ function renderGraph() {
 }
 
 watch(storyMap, () => nextTick(renderGraph), { deep: true })
+onMounted(restoreInitialSimulation)
 </script>
