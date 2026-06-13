@@ -216,6 +216,11 @@ select:focus {
   background: #f8fafc;
 }
 
+.runtime-strip .runtime-wide {
+  flex: 1 1 260px;
+  border-radius: 6px;
+}
+
 .runtime-strip b {
   margin-right: 6px;
   color: #172033;

@@ -44,6 +44,20 @@ def run_simulation(
     scenario_graph = build_scenario_graph(request)
     selected_generator = generator or select_scenario_generator(request)
     selected_skill_runner = skill_runner or select_skill_runner(request)
+    progress = Progress(
+        status="running",
+        completed_steps=0,
+        total_steps=request.world_count * request.rounds,
+        current_step="生成时间线和 NPC",
+        generation_source="pending",
+        skill_runner_source=selected_skill_runner.source,
+        skill_runner_model=selected_skill_runner.model,
+    )
+
+    write_json(output_dir / "simulation_request.json", request)
+    write_json(output_dir / "scenario_graph.json", scenario_graph)
+    write_json(output_dir / "progress.json", progress)
+
     try:
         generation = selected_generator.generate(request)
     except RuntimeError as exc:
@@ -51,22 +65,16 @@ def run_simulation(
 
     worlds = [World.model_validate(world) for world in generation.worlds]
     npcs = [Npc.model_validate(npc) for npc in generation.npcs]
-    progress = Progress(
-        status="running",
-        completed_steps=0,
-        total_steps=len(worlds) * request.rounds,
-        generation_source=generation.source,
-        generation_model=generation.model,
-        fallback_reason=generation.fallback_reason,
-        skill_runner_source=selected_skill_runner.source,
-        skill_runner_model=selected_skill_runner.model,
-    )
+    progress.total_steps = len(worlds) * request.rounds
+    progress.generation_source = generation.source
+    progress.generation_model = generation.model
+    progress.fallback_reason = generation.fallback_reason
+    progress.current_step = "开始逐轮运行 LifeOS skill"
     events: list[SimulationEvent] = []
     skill_runs: list[SkillRun] = []
     decision_traces: list[DecisionTrace] = []
 
-    write_json(output_dir / "simulation_request.json", request)
-    write_json(output_dir / "scenario_graph.json", scenario_graph)
+    write_json(output_dir / "progress.json", progress)
     write_json(output_dir / "worlds.json", [world.model_dump(mode="json") for world in worlds])
     write_json(output_dir / "npcs.json", [npc.model_dump(mode="json") for npc in npcs])
 

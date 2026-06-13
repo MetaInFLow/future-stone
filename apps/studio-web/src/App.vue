@@ -76,6 +76,19 @@
       </header>
 
       <section class="runtime-strip" v-if="progress.status || busy">
+        <span v-if="activeSimulationId" class="runtime-wide">
+          <b>Run</b>
+          {{ activeSimulationId }}
+        </span>
+        <span class="runtime-wide">
+          <b>Step</b>
+          {{ currentStepText }}
+        </span>
+        <span>
+          <b>Progress</b>
+          {{ progress.completed_steps || 0 }} / {{ progress.total_steps || 0 }}
+          <small v-if="progressPercent">· {{ progressPercent }}%</small>
+        </span>
         <span>
           <b>World/NPC</b>
           {{ progress.generation_source || 'pending' }}
@@ -88,6 +101,14 @@
         </span>
         <span v-if="progress.fallback_reason" class="fallback-note">
           fallback: {{ progress.fallback_reason }}
+        </span>
+        <span>
+          <b>Elapsed</b>
+          {{ elapsedLabel }}
+        </span>
+        <span>
+          <b>Updated</b>
+          {{ updatedAtLabel }}
         </span>
       </section>
 
@@ -194,6 +215,9 @@ const report = ref(null)
 const selectedNode = ref(null)
 const graphEl = ref(null)
 const errorMessage = ref('')
+const activeSimulationId = ref('')
+const runStartedAt = ref(null)
+const lastStatusAt = ref(null)
 
 const stepIndex = computed(() => {
   if (busy.value && progress.value.completed_steps > 0) return 3
@@ -213,9 +237,35 @@ const statusClass = computed(() => ({
   completed: progress.value.status === 'completed',
 }))
 
+const currentStepText = computed(() => {
+  if (progress.value.current_step) return progress.value.current_step
+  if (busy.value) return '等待后端返回状态'
+  return 'idle'
+})
+
+const progressPercent = computed(() => {
+  const total = Number(progress.value.total_steps || 0)
+  if (!total) return 0
+  return Math.floor((Number(progress.value.completed_steps || 0) / total) * 100)
+})
+
+const elapsedLabel = computed(() => {
+  if (!runStartedAt.value) return '0s'
+  const now = lastStatusAt.value || Date.now()
+  return formatDuration(Math.max(0, Math.floor((now - runStartedAt.value) / 1000)))
+})
+
+const updatedAtLabel = computed(() => {
+  if (!progress.value.updated_at) return 'waiting'
+  return formatClock(progress.value.updated_at)
+})
+
 async function createAndRun() {
   busy.value = true
   errorMessage.value = ''
+  activeSimulationId.value = ''
+  runStartedAt.value = Date.now()
+  lastStatusAt.value = Date.now()
   selectedNode.value = null
   progress.value = {}
   storyMap.value = { nodes: [], edges: [] }
@@ -231,6 +281,7 @@ async function createAndRun() {
     }
     const created = await axios.post(`${apiBase}/api/simulations`, payload)
     const simulationId = created.data.data.simulation_id
+    activeSimulationId.value = simulationId
     const started = await axios.post(`${apiBase}/api/simulations/${simulationId}/start`)
     applySimulationPayload(started.data.data)
     if (progress.value.status !== 'completed') {
@@ -254,7 +305,9 @@ async function pollUntilCompleted(simulationId) {
   for (let attempt = 0; attempt < 240; attempt += 1) {
     await delay(1500)
     const statusRes = await axios.get(`${apiBase}/api/simulations/${simulationId}/status`)
+    lastStatusAt.value = Date.now()
     progress.value = statusRes.data.data
+    await loadPartialArtifacts(simulationId)
     if (progress.value.status === 'completed') return
     if (progress.value.status === 'failed') {
       throw new Error(progress.value.current_step || '推演失败')
@@ -280,10 +333,36 @@ async function loadSimulationArtifacts(simulationId) {
   renderGraph()
 }
 
+async function loadPartialArtifacts(simulationId) {
+  const [eventsRes, skillsRes, tracesRes] = await Promise.allSettled([
+    axios.get(`${apiBase}/api/simulations/${simulationId}/events`),
+    axios.get(`${apiBase}/api/simulations/${simulationId}/skill-runs`),
+    axios.get(`${apiBase}/api/simulations/${simulationId}/decision-traces`),
+  ])
+  if (eventsRes.status === 'fulfilled') events.value = eventsRes.value.data.data.events
+  if (skillsRes.status === 'fulfilled') skillRuns.value = skillsRes.value.data.data.skill_runs
+  if (tracesRes.status === 'fulfilled') {
+    decisionTraces.value = tracesRes.value.data.data.decision_traces
+  }
+}
+
 function delay(ms) {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms)
   })
+}
+
+function formatDuration(seconds) {
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const rest = seconds % 60
+  return `${minutes}m ${rest}s`
+}
+
+function formatClock(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleTimeString()
 }
 
 function splitList(value) {

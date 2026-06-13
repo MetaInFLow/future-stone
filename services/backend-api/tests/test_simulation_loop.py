@@ -115,6 +115,39 @@ class FakeSkillRunner:
         }
 
 
+class ProgressObservingScenarioGenerator(FakeScenarioGenerator):
+    def __init__(self, output_dir):
+        self.output_dir = output_dir
+
+    def generate(self, request):
+        import json
+
+        progress_path = self.output_dir / "progress.json"
+        progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        assert progress["status"] == "running"
+        assert progress["current_step"] == "生成时间线和 NPC"
+        assert progress["generation_source"] == "pending"
+        assert progress["skill_runner_source"] == "fake-skill-runner"
+        return super().generate(request)
+
+
+def test_run_simulation_writes_generation_progress_before_llm_call(tmp_path):
+    request = SimulationRequest(
+        scene=SceneInput(description="要不要参加黑客松？"),
+        question="是否参加黑客松？",
+        world_count=1,
+        rounds=1,
+        runner="llm",
+    )
+
+    run_simulation(
+        request,
+        output_dir=tmp_path,
+        generator=ProgressObservingScenarioGenerator(tmp_path),
+        skill_runner=FakeSkillRunner(),
+    )
+
+
 def test_run_simulation_uses_generated_worlds_and_skill_decisions(tmp_path):
     request = SimulationRequest(
         scene=SceneInput(description="一个不是黑客松的自定义场景"),
