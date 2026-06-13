@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from threading import Lock, Thread
 
 from .repository import (
     load_request,
@@ -9,9 +10,13 @@ from .repository import (
     read_jsonl,
     save_request,
     simulation_dir,
+    write_json,
 )
 from .schemas import Progress, SimulationRequest
 from .simulation_loop import run_simulation
+
+_RUNNING_LOCK = Lock()
+_RUNNING_THREADS: dict[str, Thread] = {}
 
 
 def create_simulation(request: SimulationRequest) -> dict:
@@ -27,12 +32,74 @@ def create_simulation(request: SimulationRequest) -> dict:
 def start_simulation(simulation_id: str) -> dict:
     request = load_request(simulation_id)
     folder = simulation_dir(simulation_id)
+    if request.runner in {"llm", "piagent"}:
+        return start_background_simulation(simulation_id, request, folder)
+
     result = run_simulation(request, output_dir=folder)
     return {
         "simulation_id": simulation_id,
         "progress": result.progress.model_dump(mode="json"),
         "report": result.report.model_dump(mode="json"),
         "story_map": result.story_map.model_dump(mode="json"),
+    }
+
+
+def start_background_simulation(
+    simulation_id: str, request: SimulationRequest, folder: Path
+) -> dict:
+    if (folder / "report.json").exists() and (folder / "story_map.json").exists():
+        return simulation_payload(simulation_id)
+
+    with _RUNNING_LOCK:
+        thread = _RUNNING_THREADS.get(simulation_id)
+        if thread and thread.is_alive():
+            return simulation_payload(simulation_id)
+
+        progress = Progress(
+            status="running",
+            completed_steps=0,
+            total_steps=request.world_count * request.rounds,
+            current_step="queued",
+            generation_source="pending",
+            skill_runner_source=request.runner,
+        )
+        write_json(folder / "progress.json", progress)
+        thread = Thread(
+            target=run_background_loop,
+            args=(simulation_id, request, folder),
+            daemon=True,
+        )
+        _RUNNING_THREADS[simulation_id] = thread
+        thread.start()
+        return simulation_payload(simulation_id)
+
+
+def run_background_loop(simulation_id: str, request: SimulationRequest, folder: Path) -> None:
+    try:
+        run_simulation(request, output_dir=folder)
+    except Exception as exc:  # noqa: BLE001 - persist failure for the UI instead of losing it.
+        write_json(
+            folder / "progress.json",
+            Progress(
+                status="failed",
+                current_step=str(exc),
+                total_steps=request.world_count * request.rounds,
+            ),
+        )
+    finally:
+        with _RUNNING_LOCK:
+            _RUNNING_THREADS.pop(simulation_id, None)
+
+
+def simulation_payload(simulation_id: str) -> dict:
+    folder = simulation_dir(simulation_id)
+    report_path = folder / "report.json"
+    story_map_path = folder / "story_map.json"
+    return {
+        "simulation_id": simulation_id,
+        "progress": get_status(simulation_id),
+        "report": read_json(report_path) if report_path.exists() else None,
+        "story_map": read_json(story_map_path) if story_map_path.exists() else None,
     }
 
 
@@ -68,4 +135,3 @@ def required_path(simulation_id: str, file_name: str) -> Path:
     if not path.exists():
         raise FileNotFoundError(f"Simulation artifact not found: {path}")
     return path
-

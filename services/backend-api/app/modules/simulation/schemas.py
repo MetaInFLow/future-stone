@@ -23,7 +23,7 @@ class SimulationRequest(BaseModel):
     rounds: int = 3
     avatars: list[str] = Field(default_factory=lambda: ["AnthonyFan.LifeOS"])
     npc_roles: list[str] = Field(default_factory=lambda: ["参赛选手", "家人", "评委"])
-    runner: Literal["replay", "piagent"] = "replay"
+    runner: Literal["llm", "replay", "piagent"] = "llm"
 
     @field_validator("world_count")
     @classmethod
@@ -128,6 +128,11 @@ class Progress(BaseModel):
     completed_steps: int = 0
     total_steps: int = 0
     current_step: str = ""
+    generation_source: str = "pending"
+    generation_model: str = ""
+    fallback_reason: str = ""
+    skill_runner_source: str = "pending"
+    skill_runner_model: str = ""
     updated_at: str = Field(default_factory=utc_now)
 
 
@@ -159,4 +164,3 @@ class SimulationResult(BaseModel):
     decision_traces: list[DecisionTrace]
     report: Report
     story_map: StoryMap
-

@@ -196,6 +196,49 @@ select:focus {
   padding: 16px;
 }
 
+.runtime-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #d7dee8;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #344256;
+  font-size: 13px;
+}
+
+.runtime-strip span {
+  border: 1px solid #d7dee8;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #f8fafc;
+}
+
+.runtime-strip b {
+  margin-right: 6px;
+  color: #172033;
+}
+
+.runtime-strip small {
+  color: #65758b;
+}
+
+.runtime-strip .fallback-note {
+  border-color: #fbbf24;
+  background: #fffbeb;
+  color: #92400e;
+  border-radius: 6px;
+}
+
+.error-message {
+  margin: 0;
+  color: #fecaca;
+  line-height: 1.45;
+  font-size: 13px;
+}
+
 .metric-row {
   display: flex;
   flex-wrap: wrap;
@@ -346,4 +389,3 @@ li {
     border-bottom: 1px solid #d7dee8;
   }
 }
-

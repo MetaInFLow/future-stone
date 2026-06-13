@@ -17,6 +17,20 @@ Future Stone 是 LifeOS 的 **Decision Simulation Agent**。
 
 ## 本地启动
 
+先配置本地 `.env`：
+
+```bash
+cp .env.example .env
+```
+
+需要真实生成时填写：
+
+```dotenv
+LLM_BASE_URL=https://your-openai-compatible-endpoint/v1
+LLM_API_KEY=your-token
+LLM_MODEL_NAME=your-model
+```
+
 ```bash
 pnpm install
 pnpm dev:api
@@ -46,9 +60,15 @@ pnpm verify
   "rounds": 3,
   "avatars": ["AnthonyFan.LifeOS", "Neil.LifeOS"],
   "npc_roles": ["参赛选手", "家人", "评委"],
-  "runner": "replay"
+  "runner": "llm"
 }
 ```
+
+`runner` 支持：
+
+- `llm`：默认路径。使用 OpenAI-compatible API 生成时间线、NPC 和每轮 skill 决策。
+- `replay`：确定性本地回放，用于测试和无密钥 fallback。
+- `piagent`：预留给 PiAgent skill runner；当前先走 LLM-compatible 适配层。
 
 ## 输出产物
 
@@ -65,7 +85,9 @@ pnpm verify
 - `report.json`
 - `story_map.json`
 
+LLM / PiAgent runner 会后台执行，`POST /api/simulations/<id>/start` 会先返回 `running`。
+前端轮询 `GET /api/simulations/<id>/status`，完成后再拉取 report、story map、events 和 skill runs。
+
 ## MiroFish 借鉴边界
 
 本项目借鉴 MiroFish 的五步产品链路和图谱/报告/互动呈现方式，不复制 MiroFish AGPL-3.0 代码。Future Stone 的 runtime 是 LifeOS skill / PiAgent 适配层，而不是 CAMEL/OASIS 社交仿真。
-

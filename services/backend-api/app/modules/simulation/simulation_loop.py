@@ -4,6 +4,7 @@ import hashlib
 from collections import Counter
 from pathlib import Path
 
+from .generation import ReplayScenarioGenerator, ScenarioGenerator, select_scenario_generator
 from .repository import write_json, write_jsonl
 from .schemas import (
     DecisionTrace,
@@ -21,6 +22,7 @@ from .schemas import (
     World,
     utc_now,
 )
+from .skill_runner import SkillRunner, select_skill_runner
 
 SELF_LENSES = [
     ("current-self", "当前的我", "按现有惯性做选择"),
@@ -31,24 +33,33 @@ SELF_LENSES = [
     ("mission-observer", "使命观察者", "判断是否靠近我是谁"),
 ]
 
-WORLD_PATTERNS = [
-    ("赛题高度贴合 LifeOS", ["评委关注真实 demo", "现场资源密集", "传播机会强"], "使命与窗口"),
-    ("赛题偏离主线", ["题目偏工具化", "demo 难以沉淀", "时间被切碎"], "方向偏离"),
-    ("团队状态紧张", ["睡眠不足", "分工不稳", "外部承诺挤压"], "资源约束"),
-    ("NPC 强烈支持", ["参赛者愿意共创", "评委期待叙事", "家人接受短期投入"], "关系助推"),
-    ("外部反馈冷淡", ["用户不理解", "评委只看功能", "传播噪音高"], "市场误读"),
-]
 
-
-def run_simulation(request: SimulationRequest, output_dir: Path) -> SimulationResult:
+def run_simulation(
+    request: SimulationRequest,
+    output_dir: Path,
+    generator: ScenarioGenerator | None = None,
+    skill_runner: SkillRunner | None = None,
+) -> SimulationResult:
     output_dir.mkdir(parents=True, exist_ok=True)
     scenario_graph = build_scenario_graph(request)
-    worlds = build_worlds(request)
-    npcs = build_npcs(worlds, request.npc_roles)
+    selected_generator = generator or select_scenario_generator(request)
+    selected_skill_runner = skill_runner or select_skill_runner(request)
+    try:
+        generation = selected_generator.generate(request)
+    except RuntimeError as exc:
+        generation = ReplayScenarioGenerator(fallback_reason=str(exc)).generate(request)
+
+    worlds = [World.model_validate(world) for world in generation.worlds]
+    npcs = [Npc.model_validate(npc) for npc in generation.npcs]
     progress = Progress(
         status="running",
         completed_steps=0,
         total_steps=len(worlds) * request.rounds,
+        generation_source=generation.source,
+        generation_model=generation.model,
+        fallback_reason=generation.fallback_reason,
+        skill_runner_source=selected_skill_runner.source,
+        skill_runner_model=selected_skill_runner.model,
     )
     events: list[SimulationEvent] = []
     skill_runs: list[SkillRun] = []
@@ -67,7 +78,14 @@ def run_simulation(request: SimulationRequest, output_dir: Path) -> SimulationRe
             ]
             events.extend(round_events)
 
-            skill_run, trace = run_replay_skill(world, round_index, round_events, request)
+            skill_run, trace = run_skill(
+                world,
+                round_index,
+                round_events,
+                request,
+                selected_skill_runner,
+                progress,
+            )
             skill_runs.append(skill_run)
             decision_traces.append(trace)
 
@@ -126,54 +144,16 @@ def build_scenario_graph(request: SimulationRequest) -> ScenarioGraph:
     return ScenarioGraph(nodes=nodes, edges=edges)
 
 
-def build_worlds(request: SimulationRequest) -> list[World]:
-    worlds = []
-    for index in range(request.world_count):
-        pattern = WORLD_PATTERNS[index % len(WORLD_PATTERNS)]
-        pressure = 2 + stable_int(f"{request.question}:{index}", 4)
-        worlds.append(
-            World(
-                id=f"world-{index + 1:03d}",
-                title=f"时间线 {index + 1:03d}",
-                summary=f"{pattern[0]}：{request.question}",
-                external_variables=pattern[1],
-                pressure_level=pressure,
-                dominant_tension=pattern[2],
-            )
-        )
-    return worlds
-
-
-def build_npcs(worlds: list[World], roles: list[str]) -> list[Npc]:
-    npcs = []
-    for world in worlds:
-        for index, role in enumerate(roles, start=1):
-            influence = 1 + stable_int(f"{world.id}:{role}", 5)
-            stance = stance_for(role, world.dominant_tension, influence)
-            npcs.append(
-                Npc(
-                    id=f"{world.id}-npc-{index}",
-                    world_id=world.id,
-                    role=role,
-                    name=f"{role}-{world.id[-3:]}",
-                    stance=stance,
-                    influence=influence,
-                    goal=goal_for(role),
-                )
-            )
-    return npcs
-
-
 def build_event(
     world: World, npc: Npc, round_index: int, request: SimulationRequest
 ) -> SimulationEvent:
     message = (
-        f"在{world.title}第 {round_index} 轮，{npc.role}从“{world.dominant_tension}”角度施压："
-        f"{npc.stance}。"
+        f"在{world.title}第 {round_index} 轮，{npc.name}（{npc.role}）带着目标"
+        f"“{npc.goal}”进入讨论；TA 的立场是：{npc.stance}。"
     )
     response = (
-        f"Avatar 先承认 {npc.role} 的约束，再把问题拉回 {request.question} "
-        f"和 LifeOS 主线是否一致。"
+        f"Avatar 记录 {npc.role} 的现实压力，把它和“{request.question}”放到"
+        f"“{world.dominant_tension}”张力里评估。"
     )
     impact = npc.influence if "支持" in npc.stance or "机会" in npc.stance else -npc.influence
     return SimulationEvent(
@@ -186,41 +166,41 @@ def build_event(
         avatar_response=response,
         impact=impact,
         evidence_refs=[
-            "lifeos://self-model/decision-factors",
+            "lifeos://skill/decision-simulation/input",
             "lifeos://principle/human-decides-ai-simulates",
         ],
     )
 
 
-def run_replay_skill(
+def run_skill(
     world: World,
     round_index: int,
     events: list[SimulationEvent],
     request: SimulationRequest,
+    skill_runner: SkillRunner,
+    progress: Progress,
 ) -> tuple[SkillRun, DecisionTrace]:
-    score = world.pressure_level + sum(event.impact for event in events)
-    has_mainline_signal = any(
-        "LifeOS" in variable or "demo" in variable for variable in world.external_variables
-    )
-    if score >= 6 and has_mainline_signal:
-        decision = "参加"
-    elif score <= -2:
-        decision = "不参加"
-    else:
-        decision = "条件参加"
+    output = skill_runner.run(world, round_index, events, request)
+    runner_source = str(output.get("_source") or skill_runner.source)
+    runner_model = str(output.get("_model") or skill_runner.model)
+    fallback_reason = str(output.get("_fallback_reason") or "")
+    if fallback_reason:
+        progress.fallback_reason = merge_fallback_reason(progress.fallback_reason, fallback_reason)
+        progress.skill_runner_source = runner_source
+        progress.skill_runner_model = runner_model
 
-    skill_ref = "lifeos://skill/decision-simulation/replay"
-    rationale = (
-        f"{world.title} 的主张是 {decision}。依据是外部变量、NPC 压力、"
-        "长期主义视角和现实约束共同评分。"
-    )
-    confidence = max(0.35, min(0.92, 0.58 + score / 30))
+    decision = str(output["decision"])
+    rationale = str(output["rationale"])
+    confidence = float(output["confidence"])
+    decision_basis = [str(item) for item in output.get("decision_basis", [])]
+    self_model_refs = [str(item) for item in output.get("self_model_refs", [])]
+    skill_ref = f"lifeos://skill/decision-simulation/{runner_source}"
     skill_run = SkillRun(
         id=f"{world.id}-round-{round_index}-skill-run",
         world_id=world.id,
         round_index=round_index,
         skill_ref=skill_ref,
-        runner=request.runner,
+        runner=runner_source,
         input_summary=f"{request.question} / {world.summary}",
         output_decision=decision,
         output_rationale=rationale,
@@ -232,21 +212,20 @@ def run_replay_skill(
         round_index=round_index,
         decision=decision,
         skill_ref=skill_ref,
-        decision_basis=[
-            f"外部变量：{', '.join(world.external_variables)}",
-            f"世界张力：{world.dominant_tension}",
-            "当前的我：偏向把高密度事件转成可展示产物",
-            "长期主义的我：只接受能沉淀 LifeOS 主线资产的投入",
-            "反方的我：警惕为了比赛而比赛、为了叙事而牺牲 M1",
-        ],
+        decision_basis=decision_basis,
         npc_effects=[f"{event.npc_role}: {event.impact:+d}" for event in events],
-        self_model_refs=[
-            "lifeos://avatar/decision-factors",
-            "lifeos://avatar/boundary/human-decides",
-        ],
+        self_model_refs=self_model_refs,
         confidence=skill_run.confidence,
     )
     return skill_run, trace
+
+
+def merge_fallback_reason(existing: str, new_reason: str) -> str:
+    if not existing:
+        return new_reason
+    if new_reason in existing:
+        return existing
+    return f"{existing} | {new_reason}"
 
 
 def compile_report(
@@ -332,30 +311,3 @@ def build_story_map(
 def slug_id(prefix: str, value: str) -> str:
     digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:8]
     return f"{prefix}-{digest}"
-
-
-def stable_int(seed: str, modulo: int) -> int:
-    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()
-    return int(digest[:8], 16) % modulo
-
-
-def stance_for(role: str, tension: str, influence: int) -> str:
-    if "家人" in role:
-        return "支持你做长期正确的事，但要求别牺牲身体和亲密关系"
-    if "评委" in role:
-        return "只认可能现场跑起来、能说清用户价值的 demo"
-    if "参赛" in role:
-        return "愿意一起冲刺，但希望目标明确、分工清楚"
-    if influence >= 4:
-        return f"强烈放大{tension}带来的机会与风险"
-    return f"提醒{tension}不能被忽略"
-
-
-def goal_for(role: str) -> str:
-    if "家人" in role:
-        return "保护长期节奏和关系成本"
-    if "评委" in role:
-        return "判断作品是否有真实用户价值"
-    if "参赛" in role:
-        return "在 48 小时内做出能讲清的作品"
-    return "给 Avatar 决策增加现实压力"

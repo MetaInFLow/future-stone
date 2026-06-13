@@ -39,13 +39,15 @@
         <label>
           Runner
           <select v-model="form.runner">
-            <option value="replay">Replay SkillRunner</option>
+            <option value="llm">LLM SkillRunner</option>
             <option value="piagent">PiAgent SkillRunner</option>
+            <option value="replay">Replay SkillRunner</option>
           </select>
         </label>
         <button class="primary-action" :disabled="busy" @click="createAndRun">
           {{ busy ? '正在推演...' : 'Run Future Stone' }}
         </button>
+        <p v-if="errorMessage" class="error-message">{{ errorMessage }}</p>
       </section>
 
       <section class="steps-section">
@@ -72,6 +74,22 @@
           <span><b>{{ decisionTraces.length }}</b> decisions</span>
         </div>
       </header>
+
+      <section class="runtime-strip" v-if="progress.status || busy">
+        <span>
+          <b>World/NPC</b>
+          {{ progress.generation_source || 'pending' }}
+          <small v-if="progress.generation_model">· {{ progress.generation_model }}</small>
+        </span>
+        <span>
+          <b>Skill</b>
+          {{ progress.skill_runner_source || form.runner }}
+          <small v-if="progress.skill_runner_model">· {{ progress.skill_runner_model }}</small>
+        </span>
+        <span v-if="progress.fallback_reason" class="fallback-note">
+          fallback: {{ progress.fallback_reason }}
+        </span>
+      </section>
 
       <div class="canvas-layout">
         <section class="graph-pane">
@@ -161,7 +179,7 @@ const form = reactive({
   question: 'Anthony 和 Neil 是否应该参加这次黑客松？',
   world_count: 12,
   rounds: 3,
-  runner: 'replay',
+  runner: 'llm',
 })
 
 const avatarText = ref('AnthonyFan.LifeOS, Neil.LifeOS')
@@ -175,10 +193,12 @@ const decisionTraces = ref([])
 const report = ref(null)
 const selectedNode = ref(null)
 const graphEl = ref(null)
+const errorMessage = ref('')
 
 const stepIndex = computed(() => {
+  if (busy.value && progress.value.completed_steps > 0) return 3
+  if (busy.value) return 2
   if (!storyMap.value.nodes.length) return 0
-  if (busy.value) return 3
   if (report.value) return 5
   return 2
 })
@@ -195,7 +215,14 @@ const statusClass = computed(() => ({
 
 async function createAndRun() {
   busy.value = true
+  errorMessage.value = ''
   selectedNode.value = null
+  progress.value = {}
+  storyMap.value = { nodes: [], edges: [] }
+  events.value = []
+  skillRuns.value = []
+  decisionTraces.value = []
+  report.value = null
   try {
     const payload = {
       ...form,
@@ -205,23 +232,58 @@ async function createAndRun() {
     const created = await axios.post(`${apiBase}/api/simulations`, payload)
     const simulationId = created.data.data.simulation_id
     const started = await axios.post(`${apiBase}/api/simulations/${simulationId}/start`)
-    progress.value = started.data.data.progress
-    storyMap.value = started.data.data.story_map
-    report.value = started.data.data.report
-
-    const [eventsRes, skillsRes, tracesRes] = await Promise.all([
-      axios.get(`${apiBase}/api/simulations/${simulationId}/events`),
-      axios.get(`${apiBase}/api/simulations/${simulationId}/skill-runs`),
-      axios.get(`${apiBase}/api/simulations/${simulationId}/decision-traces`),
-    ])
-    events.value = eventsRes.data.data.events
-    skillRuns.value = skillsRes.data.data.skill_runs
-    decisionTraces.value = tracesRes.data.data.decision_traces
-    await nextTick()
-    renderGraph()
+    applySimulationPayload(started.data.data)
+    if (progress.value.status !== 'completed') {
+      await pollUntilCompleted(simulationId)
+    }
+    await loadSimulationArtifacts(simulationId)
+  } catch (error) {
+    errorMessage.value = error?.response?.data?.error || error?.message || '推演失败'
   } finally {
     busy.value = false
   }
+}
+
+function applySimulationPayload(data) {
+  progress.value = data.progress || {}
+  if (data.story_map) storyMap.value = data.story_map
+  if (data.report) report.value = data.report
+}
+
+async function pollUntilCompleted(simulationId) {
+  for (let attempt = 0; attempt < 240; attempt += 1) {
+    await delay(1500)
+    const statusRes = await axios.get(`${apiBase}/api/simulations/${simulationId}/status`)
+    progress.value = statusRes.data.data
+    if (progress.value.status === 'completed') return
+    if (progress.value.status === 'failed') {
+      throw new Error(progress.value.current_step || '推演失败')
+    }
+  }
+  throw new Error('推演超时')
+}
+
+async function loadSimulationArtifacts(simulationId) {
+  const [storyRes, reportRes, eventsRes, skillsRes, tracesRes] = await Promise.all([
+    axios.get(`${apiBase}/api/simulations/${simulationId}/story-map`),
+    axios.get(`${apiBase}/api/simulations/${simulationId}/report`),
+    axios.get(`${apiBase}/api/simulations/${simulationId}/events`),
+    axios.get(`${apiBase}/api/simulations/${simulationId}/skill-runs`),
+    axios.get(`${apiBase}/api/simulations/${simulationId}/decision-traces`),
+  ])
+  storyMap.value = storyRes.data.data
+  report.value = reportRes.data.data
+  events.value = eventsRes.data.data.events
+  skillRuns.value = skillsRes.data.data.skill_runs
+  decisionTraces.value = tracesRes.data.data.decision_traces
+  await nextTick()
+  renderGraph()
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
 }
 
 function splitList(value) {
@@ -329,4 +391,3 @@ function renderGraph() {
 
 watch(storyMap, () => nextTick(renderGraph), { deep: true })
 </script>
-
