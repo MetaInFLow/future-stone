@@ -1,0 +1,13 @@
+.DS_Store
+.env
+.venv/
+node_modules/
+dist/
+runtime/
+logs/
+uploads/
+*.pyc
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+

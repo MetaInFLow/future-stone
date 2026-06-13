@@ -1,0 +1,29 @@
+[project]
+name = "future-stone-backend"
+version = "0.1.0"
+description = "Future Stone backend for LifeOS decision timeline simulation."
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "flask>=3.0.0",
+    "flask-cors>=6.0.0",
+    "pydantic>=2.7.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.6.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
